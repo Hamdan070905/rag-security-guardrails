@@ -1,108 +1,52 @@
-import streamlit as st
+import gradio as gr
 import tempfile
 import os
 from rag_engine import extract_text_from_pdf, store_document, retrieve_relevant_chunks, ask_claude
 from security import run_security_checks
+from logger import log_query
 
-# Page config
-st.set_page_config(
-    page_title="SecureRAG Assistant",
-    page_icon="🔒",
-    layout="wide"
-)
-
-# Title
-st.title("🔒 SecureRAG — AI Document Assistant")
-st.caption("Upload any PDF and ask questions securely")
-
-# Sidebar
-with st.sidebar:
-    st.header("📁 Upload Document")
-    uploaded_file = st.file_uploader("Choose PDF", type="pdf")
+def process_pdf(pdf_file):
+    if pdf_file is None:
+        return "⚠️ Please upload a PDF first"
     
-    if uploaded_file:
-        with st.spinner("Processing document..."):
-            # Save temp file
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                tmp.write(uploaded_file.read())
-                tmp_path = tmp.name
-            
-            # Extract and store
-            with open(tmp_path, 'rb') as f:
-                text = extract_text_from_pdf(f)
-            
-            chunks_count = store_document(text, uploaded_file.name)
-            os.unlink(tmp_path)
-            
-        st.success(f"✅ Document processed!")
-        st.info(f"📊 {chunks_count} chunks stored")
-        st.session_state['doc_loaded'] = True
-        st.session_state['doc_name'] = uploaded_file.name
-
-    # Security Status Panel
-    st.divider()
-    st.header("🛡️ Security Status")
-    st.success("✅ Injection Detection: ON")
-    st.success("✅ Toxic Filter: ON")
-    st.success("✅ Length Guard: ON")
-
-# Main chat area
-st.header("💬 Ask Questions")
-
-# Chat history
-if 'messages' not in st.session_state:
-    st.session_state.messages = []
-
-# Display chat history
-for msg in st.session_state.messages:
-    with st.chat_message(msg['role']):
-        st.write(msg['content'])
-
-# Query input
-query = st.chat_input("Ask anything about your document...")
-
-if query:
-    # Show user message
-    with st.chat_message("user"):
-        st.write(query)
+    with open(pdf_file.name, 'rb') as f:
+        text = extract_text_from_pdf(f)
     
-    # Run security check FIRST
+    chunks = store_document(text, "document")
+    return f"✅ Document processed! {chunks} chunks stored."
+
+def answer_question(query):
+    if not query:
+        return "Please enter a question"
+    
+    # Security check
     is_safe, security_msg = run_security_checks(query)
+    log_query(query, is_safe, security_msg)
     
     if not is_safe:
-        # Block unsafe query
-        with st.chat_message("assistant"):
-            st.error(security_msg)
-            st.warning("Your query was blocked by security guardrails.")
-        
-        st.session_state.messages.append({
-            'role': 'assistant',
-            'content': f"BLOCKED: {security_msg}"
-        })
+        return f"🚨 BLOCKED: {security_msg}"
     
-    elif not st.session_state.get('doc_loaded'):
-        with st.chat_message("assistant"):
-            st.warning("⚠️ Please upload a PDF document first!")
+    # Get answer
+    chunks = retrieve_relevant_chunks(query)
+    answer = ask_claude(query, chunks)
+    return answer
+
+# Build UI
+with gr.Blocks(title="SecureRAG Assistant") as app:
+    gr.Markdown("# 🔒 SecureRAG — AI Document Assistant")
     
-    else:
-        # Safe query — get answer
-        with st.chat_message("assistant"):
-            with st.spinner("Searching document..."):
-                
-                # Retrieve relevant chunks
-                chunks = retrieve_relevant_chunks(query)
-                
-                # Get Claude answer
-                answer = ask_claude(query, chunks)
-                
-                # Show answer
-                st.write(answer)
-                
-                # Show sources (unique feature!)
-                with st.expander("📚 View Source Chunks Used"):
-                    for i, chunk in enumerate(chunks):
-                        st.text_area(f"Source {i+1}", chunk, height=100)
+    with gr.Row():
+        with gr.Column():
+            pdf_input = gr.File(label="Upload PDF", file_types=[".pdf"])
+            upload_btn = gr.Button("Process Document", variant="primary")
+            upload_status = gr.Textbox(label="Status")
         
-        # Save to history
-        st.session_state.messages.append({'role': 'user', 'content': query})
-        st.session_state.messages.append({'role': 'assistant', 'content': answer})
+        with gr.Column():
+            query_input = gr.Textbox(label="Ask a Question")
+            ask_btn = gr.Button("Ask", variant="primary")
+            answer_output = gr.Textbox(label="Answer", lines=5)
+    
+    upload_btn.click(process_pdf, inputs=pdf_input, outputs=upload_status)
+    ask_btn.click(answer_question, inputs=query_input, outputs=answer_output)
+
+app.launch()

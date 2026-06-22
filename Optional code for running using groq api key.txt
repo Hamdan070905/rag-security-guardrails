@@ -1,0 +1,35 @@
+Step 2: Update .env
+envANTHROPIC_API_KEY=your_anthropic_key
+GROQ_API_KEY=your_groq_key_here
+Step 3: Update rag_engine.py — Replace ask_claude function only:
+pythondef ask_claude(query, context_chunks):
+    try:
+        from groq import Groq
+        groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+        context = "\n\n".join(context_chunks)
+        
+        response = groq_client.chat.completions.create(
+            model="llama3-8b-8192",  # Free model
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"""Answer based ONLY on this context:
+
+Context:
+{context}
+
+Question: {query}
+
+If answer not in context, say 'Information not found in document.'"""
+                }
+            ],
+            max_tokens=1000
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"API Error: {str(e)}"
+Step 4: Install Groq
+bashpip install groq
+pip freeze > requirements.txt
+Step 5: Run & Test
+bashpython app.py
